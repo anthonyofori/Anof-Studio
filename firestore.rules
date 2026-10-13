@@ -1,0 +1,114 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Helpers
+    function isValidUserProfile(data, uid) {
+      return data.keys().hasAll(['userId', 'email'])
+        && data.keys().hasOnly(['userId', 'email', 'displayName', 'photoURL', 'createdAt'])
+        && data.userId == uid
+        && data.email is string && data.email.size() <= 150
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500));
+    }
+
+    function isValidScript(data, uid) {
+      return data.keys().hasAll(['userId', 'title', 'content', 'language'])
+        && data.keys().hasOnly(['id', 'userId', 'title', 'content', 'language', 'createdAt', 'updatedAt'])
+        && data.userId == uid
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.content is string && data.content.size() <= 10000
+        && data.language is string && data.language.size() <= 50;
+    }
+
+    function isValidVoiceClone(data, uid) {
+      return data.keys().hasAll(['userId', 'name', 'gender', 'timbre', 'recommendedBaseVoice'])
+        && data.keys().hasOnly(['id', 'userId', 'name', 'gender', 'timbre', 'accent', 'acousticProfile', 'recommendedBaseVoice', 'narrationGuidelines', 'createdAt', 'sampleAudioUrl'])
+        && data.userId == uid
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.gender in ['male', 'female']
+        && data.timbre is string && data.timbre.size() <= 300
+        && data.recommendedBaseVoice is string && data.recommendedBaseVoice.size() <= 50
+        && (!('accent' in data) || (data.accent is string && data.accent.size() <= 100))
+        && (!('acousticProfile' in data) || (data.acousticProfile is string && data.acousticProfile.size() <= 500))
+        && (!('narrationGuidelines' in data) || (data.narrationGuidelines is string && data.narrationGuidelines.size() <= 500));
+    }
+
+    function isValidSpeechGeneration(data, uid) {
+      return data.keys().hasAll(['userId', 'title', 'voice', 'language'])
+        && data.keys().hasOnly(['id', 'userId', 'title', 'textSnippet', 'voice', 'language', 'characters', 'createdAt'])
+        && data.userId == uid
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.voice is string && data.voice.size() <= 100
+        && data.language is string && data.language.size() <= 50
+        && (!('textSnippet' in data) || (data.textSnippet is string && data.textSnippet.size() <= 500))
+        && (!('characters' in data) || (data.characters is number));
+    }
+
+    // User Profile Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming(), userId);
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming(), userId)
+        && incoming().userId == existing().userId;
+      allow delete: if isOwner(userId);
+
+      // User Scripts Subcollection
+      match /scripts/{scriptId} {
+        allow get: if isOwner(userId) && isValidId(scriptId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(scriptId) && isValidScript(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(scriptId) && isValidScript(incoming(), userId)
+          && incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(scriptId);
+      }
+
+      // User Cloned Voices Subcollection
+      match /voiceClones/{cloneId} {
+        allow get: if isOwner(userId) && isValidId(cloneId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(cloneId) && isValidVoiceClone(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(cloneId) && isValidVoiceClone(incoming(), userId)
+          && incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(cloneId);
+      }
+
+      // User Speech Generations Subcollection
+      match /generations/{generationId} {
+        allow get: if isOwner(userId) && isValidId(generationId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(generationId) && isValidSpeechGeneration(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(generationId) && isValidSpeechGeneration(incoming(), userId)
+          && incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(generationId);
+      }
+    }
+  }
+}

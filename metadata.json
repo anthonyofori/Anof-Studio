@@ -1,0 +1,6 @@
+{
+  "name": "French Voice & Translation Studio",
+  "description": "Convert English health and product presentations to French with high-accuracy translation and natural speech synthesis powered by Gemini 3.8 Flash TTS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

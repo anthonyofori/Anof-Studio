@@ -1,0 +1,84 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile information",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 150 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email"]
+    },
+    "Script": {
+      "title": "Script",
+      "description": "Saved multimodal script and translation document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "content": { "type": "string", "maxLength": 10000 },
+        "language": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "content", "language"]
+    },
+    "VoiceClone": {
+      "title": "VoiceClone",
+      "description": "User customized cloned voice persona",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "gender": { "type": "string", "enum": ["male", "female"] },
+        "timbre": { "type": "string", "maxLength": 300 },
+        "accent": { "type": "string", "maxLength": 100 },
+        "acousticProfile": { "type": "string", "maxLength": 500 },
+        "recommendedBaseVoice": { "type": "string", "maxLength": 50 },
+        "narrationGuidelines": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "gender", "timbre", "recommendedBaseVoice"]
+    },
+    "SpeechGeneration": {
+      "title": "SpeechGeneration",
+      "description": "Metadata history of synthesized audio speech tracks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "textSnippet": { "type": "string", "maxLength": 500 },
+        "voice": { "type": "string", "maxLength": 100 },
+        "language": { "type": "string", "maxLength": 50 },
+        "characters": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "voice", "language"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile document"
+    },
+    "/users/{userId}/scripts/{scriptId}": {
+      "schema": { "$ref": "#/entities/Script" },
+      "description": "User saved scripts and translations"
+    },
+    "/users/{userId}/voiceClones/{cloneId}": {
+      "schema": { "$ref": "#/entities/VoiceClone" },
+      "description": "User cloned voice personas"
+    },
+    "/users/{userId}/generations/{generationId}": {
+      "schema": { "$ref": "#/entities/SpeechGeneration" },
+      "description": "User synthesized speech generation history"
+    }
+  }
+}
