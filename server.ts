@@ -2,6 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
+import mammoth from 'mammoth';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, GenerateVideosOperation, Type } from '@google/genai';
 
@@ -24,6 +26,68 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+// Audio transcoding helper: converts WAV Buffer to high-quality MP3 Buffer via ffmpeg
+function convertWavToMp3Buffer(wavBuffer: Buffer, bitrate = '192k'): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', 'pipe:0',        // Input from stdin
+      '-f', 'mp3',          // Output format mp3
+      '-b:a', bitrate,       // High quality 192kbps
+      '-ac', '1',           // Voice mono channel (matches Gemini TTS output)
+      'pipe:1'              // Output to stdout
+    ]);
+
+    const chunks: Buffer[] = [];
+    let stderrData = '';
+
+    ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+    ffmpeg.stderr.on('data', (err) => {
+      stderrData += err.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.from(Buffer.concat(chunks)));
+      } else {
+        reject(new Error(`FFmpeg transcoding failed with code ${code}: ${stderrData.slice(-200)}`));
+      }
+    });
+
+    ffmpeg.on('error', (err) => {
+      reject(new Error(`Failed to start FFmpeg: ${err.message}`));
+    });
+
+    ffmpeg.stdin.write(wavBuffer);
+    ffmpeg.stdin.end();
+  });
+}
+
+// Production retry helper for transient network / 503 demand spikes
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1200): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || String(err);
+      const isTransient =
+        err?.status === 503 ||
+        err?.status === 429 ||
+        errMsg.includes('503') ||
+        errMsg.includes('high demand') ||
+        errMsg.includes('RESOURCE_EXHAUSTED') ||
+        errMsg.includes('UNAVAILABLE');
+      if (isTransient && i < retries - 1) {
+        await new Promise((res) => setTimeout(res, delay * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
 
 // 1. UNIVERSAL ANY-LANGUAGE CONVERTER / TRANSLATOR (English to French, French to English, or Any Language)
 app.post('/api/translate', async (req, res) => {
@@ -56,48 +120,50 @@ Rules:
 6. Extract key terminology / vocabulary items with clear explanations.
 7. Provide pronunciation / narration guidance for vocal speech synthesis.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: `Translate the following text into ${targetLang} (Source: ${sourceLang}):\n\n${text}`,
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            detectedSourceLang: { type: Type.STRING },
-            targetLang: { type: Type.STRING },
-            title: { type: Type.STRING },
-            translatedText: { type: Type.STRING },
-            sentencePairs: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  source: { type: Type.STRING },
-                  target: { type: Type.STRING },
+    const response = await withRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Translate the following text into ${targetLang} (Source: ${sourceLang}):\n\n${text}`,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              detectedSourceLang: { type: Type.STRING },
+              targetLang: { type: Type.STRING },
+              title: { type: Type.STRING },
+              translatedText: { type: Type.STRING },
+              sentencePairs: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    source: { type: Type.STRING },
+                    target: { type: Type.STRING },
+                  },
+                  required: ['source', 'target'],
                 },
-                required: ['source', 'target'],
               },
-            },
-            vocabulary: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  sourceTerm: { type: Type.STRING },
-                  targetTerm: { type: Type.STRING },
-                  explanation: { type: Type.STRING },
+              vocabulary: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    sourceTerm: { type: Type.STRING },
+                    targetTerm: { type: Type.STRING },
+                    explanation: { type: Type.STRING },
+                  },
+                  required: ['sourceTerm', 'targetTerm', 'explanation'],
                 },
-                required: ['sourceTerm', 'targetTerm', 'explanation'],
               },
+              pronunciationNotes: { type: Type.STRING },
             },
-            pronunciationNotes: { type: Type.STRING },
+            required: ['detectedSourceLang', 'targetLang', 'title', 'translatedText', 'sentencePairs', 'vocabulary'],
           },
-          required: ['detectedSourceLang', 'targetLang', 'title', 'translatedText', 'sentencePairs', 'vocabulary'],
         },
-      },
-    });
+      })
+    );
 
     const parsed = JSON.parse(response.text || '{}');
     return res.json(parsed);
@@ -118,6 +184,7 @@ app.post('/api/tts', async (req, res) => {
       gender = 'male',
       language = 'en',
       targetLang = 'English',
+      autoTranslate = false,
       style = 'natural human conversation',
       isCloned = false,
       clonePersona = null,
@@ -128,13 +195,34 @@ app.post('/api/tts', async (req, res) => {
       return res.status(400).json({ error: 'Text content is required for speech synthesis' });
     }
 
+    const langLabel = targetLang || (language === 'fr' ? 'French' : 'English');
+
+    // Auto-translate if requested
+    let textToSynthesize = text.trim();
+    let translatedText: string | undefined = undefined;
+
+    if (autoTranslate && targetLang) {
+      try {
+        const transPrompt = `Translate the following text into ${targetLang} with accurate natural idiomatic phrasing, maintaining all brand and product names (such as Miira-Coffee) and active botanical ingredients, ready for vocal human speech narration:\n\n${textToSynthesize}`;
+        const transResp = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: transPrompt,
+        });
+        if (transResp.text && transResp.text.trim()) {
+          textToSynthesize = transResp.text.trim();
+          translatedText = textToSynthesize;
+        }
+      } catch (transErr) {
+        console.warn('Auto-translation before TTS failed, falling back to original text:', transErr);
+      }
+    }
+
     // Map requested voice
     const validVoices = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
     let selectedVoice = validVoices.includes(voiceName) ? voiceName : (gender === 'female' ? 'Kore' : 'Charon');
 
     // Build realistic human voice prompt in the target language
     let humanVoiceDirective = '';
-    const langLabel = targetLang || (language === 'fr' ? 'French' : 'English');
 
     if (isCloned && clonePersona) {
       humanVoiceDirective = `Speak in ${langLabel} as this specific cloned human individual: ${clonePersona.description || 'Authentic human voice'}. Timbre: ${clonePersona.timbre || 'Warm and grounded'}. Accent: ${clonePersona.accent || 'Natural'}. Emulate their organic human vocal rhythm, natural breathing patterns, subtle vocal cord texture, and native ${langLabel} phonetics. Strictly avoid any robotic or synthetic AI pitch contours.`;
@@ -144,36 +232,38 @@ app.post('/api/tts', async (req, res) => {
     }
 
     // Add optional human speech bursts
-    let processedText = text.trim();
+    let processedText = textToSynthesize;
     if (realisticOptions?.addBreaths && !processedText.includes('<breath>')) {
       processedText = `<breath> ${processedText}`;
     }
 
     // Model required: gemini-3.8-flash-tts
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash-tts',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: processedText,
-              speechMetadata: {
-                style: humanVoiceDirective,
+    const response = await withRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: processedText,
+                speechMetadata: {
+                  style: humanVoiceDirective,
+                },
               },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: selectedVoice },
             },
-          ],
-        },
-      ],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: selectedVoice },
           },
         },
-      },
-    });
+      })
+    );
 
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
@@ -181,20 +271,111 @@ app.post('/api/tts', async (req, res) => {
       throw new Error('No audio data received from Gemini 3.8 Flash TTS');
     }
 
+    const wavBuffer = Buffer.from(base64Audio, 'base64');
+    let mp3Base64: string | null = null;
+    let mp3Size = 0;
+    try {
+      const mp3Buffer = await convertWavToMp3Buffer(wavBuffer, '192k');
+      mp3Base64 = mp3Buffer.toString('base64');
+      mp3Size = mp3Buffer.length;
+    } catch (mp3Err) {
+      console.warn('MP3 transcoding error:', mp3Err);
+    }
+
+    const wavUrl = `data:audio/wav;base64,${base64Audio}`;
+    const mp3Url = mp3Base64 ? `data:audio/mp3;base64,${mp3Base64}` : null;
+
     return res.json({
-      audioUrl: `data:audio/wav;base64,${base64Audio}`,
+      audioUrl: wavUrl,
+      wavUrl,
+      mp3Url,
+      wavSize: wavBuffer.length,
+      mp3Size,
       format: 'audio/wav',
+      formats: {
+        wav: wavUrl,
+        mp3: mp3Url,
+      },
       voice: selectedVoice,
       gender,
       language: langLabel,
+      translatedText,
       isCloned,
-      characters: text.length,
+      characters: textToSynthesize.length,
     });
   } catch (error: any) {
     console.error('TTS error:', error);
     return res.status(500).json({
       error: error.message || 'Speech synthesis failed',
     });
+  }
+});
+
+// 2b. AUDIO CONVERSION ENDPOINT (Convert WAV to MP3 on demand)
+app.post('/api/audio/convert', async (req, res) => {
+  try {
+    const { audioData, targetFormat = 'mp3', bitrate = '192k' } = req.body;
+    if (!audioData || typeof audioData !== 'string') {
+      return res.status(400).json({ error: 'audioData base64 string is required' });
+    }
+
+    const cleanBase64 = audioData.replace(/^data:audio\/[a-zA-Z0-9.\-_]+;base64,/, '');
+    const inputBuffer = Buffer.from(cleanBase64, 'base64');
+
+    if (targetFormat.toLowerCase() === 'mp3') {
+      const mp3Buffer = await convertWavToMp3Buffer(inputBuffer, bitrate);
+      const mp3Base64 = mp3Buffer.toString('base64');
+      return res.json({
+        success: true,
+        format: 'mp3',
+        mimeType: 'audio/mp3',
+        audioUrl: `data:audio/mp3;base64,${mp3Base64}`,
+        size: mp3Buffer.length,
+      });
+    } else {
+      return res.json({
+        success: true,
+        format: 'wav',
+        mimeType: 'audio/wav',
+        audioUrl: `data:audio/wav;base64,${cleanBase64}`,
+        size: inputBuffer.length,
+      });
+    }
+  } catch (err: any) {
+    console.error('Audio conversion error:', err);
+    return res.status(500).json({ error: err.message || 'Audio conversion failed' });
+  }
+});
+
+// 2c. AUDIO STREAMING DOWNLOAD (Binary attachment for robust downloading)
+app.post('/api/audio/download', async (req, res) => {
+  try {
+    const { audioData, format = 'wav', filename = 'anof-audio' } = req.body;
+    if (!audioData || typeof audioData !== 'string') {
+      return res.status(400).json({ error: 'audioData is required' });
+    }
+
+    const cleanBase64 = audioData.replace(/^data:audio\/[a-zA-Z0-9.\-_]+;base64,/, '');
+    let buffer: Buffer<any> = Buffer.from(cleanBase64, 'base64');
+    const ext = format.toLowerCase() === 'mp3' ? 'mp3' : 'wav';
+    const mimeType = ext === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+
+    if (ext === 'mp3' && !audioData.startsWith('data:audio/mp3')) {
+      try {
+        buffer = await convertWavToMp3Buffer(buffer, '192k');
+      } catch (convErr) {
+        console.warn('Could not transcode for download stream, using original buffer:', convErr);
+      }
+    }
+
+    const cleanFilename = filename.endsWith(`.${ext}`) ? filename : `${filename}.${ext}`;
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${cleanFilename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    return res.end(buffer);
+  } catch (err: any) {
+    console.error('Audio download streaming error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to download audio' });
   }
 });
 
@@ -457,6 +638,105 @@ app.post('/api/video-download', async (req, res) => {
   } catch (error: any) {
     console.error('Video download error:', error);
     return res.status(500).json({ error: error.message || 'Failed to stream video' });
+  }
+});
+
+// 9. DOCUMENT TEXT EXTRACTION (TXT, PDF, DOC, DOCX via Mammoth & Gemini Multimodal)
+app.post('/api/document/extract', async (req, res) => {
+  try {
+    const { fileData, fileName = 'document.txt', mimeType = '' } = req.body;
+    if (!fileData || typeof fileData !== 'string') {
+      return res.status(400).json({ error: 'fileData base64 string is required' });
+    }
+
+    const cleanBase64 = fileData.replace(/^data:[a-zA-Z0-9.\-_+/]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    const lowerName = fileName.toLowerCase();
+
+    let extractedText = '';
+
+    // Plain text files
+    if (lowerName.endsWith('.txt') || mimeType === 'text/plain') {
+      extractedText = buffer.toString('utf-8');
+    }
+    // DOCX files (Word OpenXML)
+    else if (lowerName.endsWith('.docx') || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      try {
+        const mammothResult = await mammoth.extractRawText({ buffer });
+        if (mammothResult.value && mammothResult.value.trim()) {
+          extractedText = mammothResult.value;
+        }
+      } catch (docErr) {
+        console.warn('Mammoth extraction failed, falling back to Gemini multimodal:', docErr);
+      }
+    }
+
+    // PDF, DOC, or fallback if mammoth didn't produce text
+    if (!extractedText.trim()) {
+      let docMime = mimeType;
+      if (lowerName.endsWith('.pdf')) {
+        docMime = 'application/pdf';
+      } else if (lowerName.endsWith('.docx')) {
+        docMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      } else if (lowerName.endsWith('.doc')) {
+        docMime = 'application/msword';
+      } else if (!docMime) {
+        docMime = 'application/pdf';
+      }
+
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: docMime,
+                    data: cleanBase64,
+                  },
+                },
+                {
+                  text: 'Extract and transcribe the complete verbatim text from this document. Maintain paragraph breaks, headers, and bullet lists accurately. Do not add any commentary, preamble, summary, or explanations.',
+                },
+              ],
+            },
+          ],
+        });
+        extractedText = response.text || '';
+      } catch (geminiErr: any) {
+        // Fallback for legacy .doc binary stream
+        if (lowerName.endsWith('.doc') || !extractedText) {
+          const rawStr = buffer.toString('latin1');
+          const printable = rawStr.match(/[\x20-\x7E\xA0-\xFF\n\r\t]{4,}/g);
+          if (printable && printable.length > 0) {
+            extractedText = printable.join('\n');
+          } else {
+            throw geminiErr;
+          }
+        } else {
+          throw geminiErr;
+        }
+      }
+    }
+
+    const cleanText = extractedText.trim();
+    if (!cleanText) {
+      return res.status(422).json({ error: 'No readable text could be extracted from this document.' });
+    }
+
+    const words = cleanText.split(/\s+/).filter(Boolean).length;
+    return res.json({
+      success: true,
+      text: cleanText,
+      fileName,
+      words,
+      characters: cleanText.length,
+    });
+  } catch (error: any) {
+    console.error('Document extraction error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to extract text from document' });
   }
 });
 

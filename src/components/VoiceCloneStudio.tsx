@@ -8,9 +8,11 @@ import {
   Loader2,
   Trash2,
   PlusCircle,
-  AlertCircle
+  AlertCircle,
+  Download
 } from 'lucide-react';
 import { VoiceClonePersona } from '../types';
+import { downloadAudioFile, sanitizeAudioFilename } from '../utils/audioDownload';
 
 interface VoiceCloneStudioProps {
   savedClones: VoiceClonePersona[];
@@ -38,6 +40,12 @@ export const VoiceCloneStudio: React.FC<VoiceCloneStudioProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isTestingSpeech, setIsTestingSpeech] = useState(false);
   const [activeTestingId, setActiveTestingId] = useState<string | null>(null);
+  const [lastTestedAudio, setLastTestedAudio] = useState<{
+    cloneId: string;
+    cloneName: string;
+    wavUrl: string;
+    mp3Url: string | null;
+  } | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -160,8 +168,15 @@ export const VoiceCloneStudio: React.FC<VoiceCloneStudioProps> = ({
 
       const data = await response.json();
       if (data.audioUrl) {
-        const audio = new Audio(data.audioUrl);
-        audio.play();
+        const wav = data.wavUrl || data.audioUrl;
+        setLastTestedAudio({
+          cloneId: clone.id,
+          cloneName: clone.name,
+          wavUrl: wav,
+          mp3Url: data.mp3Url || null,
+        });
+        const audio = new Audio(wav);
+        audio.play().catch(console.error);
       }
     } catch (err: any) {
       console.error('Test audio error:', err);
@@ -169,6 +184,17 @@ export const VoiceCloneStudio: React.FC<VoiceCloneStudioProps> = ({
       setIsTestingSpeech(false);
       setActiveTestingId(null);
     }
+  };
+
+  const handleDownloadTestAudio = async (clone: VoiceClonePersona, format: 'wav' | 'mp3') => {
+    if (!lastTestedAudio || lastTestedAudio.cloneId !== clone.id) return;
+    const filename = sanitizeAudioFilename('anof-clone-sample', 'en', clone.name, format);
+    await downloadAudioFile({
+      wavUrl: lastTestedAudio.wavUrl,
+      mp3Url: lastTestedAudio.mp3Url,
+      format,
+      filename,
+    });
   };
 
   return (
@@ -410,6 +436,28 @@ export const VoiceCloneStudio: React.FC<VoiceCloneStudioProps> = ({
                       Use in Speech Studio
                     </button>
                   </div>
+
+                  {lastTestedAudio && lastTestedAudio.cloneId === clone.id && (
+                    <div className="flex items-center justify-between p-2 rounded-lg bg-[#08090c] border border-amber-500/20 text-xs">
+                      <span className="text-[11px] text-slate-400">Voice Sample:</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleDownloadTestAudio(clone, 'wav')}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition cursor-pointer"
+                          title="Download sample in WAV format"
+                        >
+                          Download WAV
+                        </button>
+                        <button
+                          onClick={() => handleDownloadTestAudio(clone, 'mp3')}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/10 hover:bg-white/20 text-white border border-white/10 transition cursor-pointer"
+                          title="Download sample in MP3 format"
+                        >
+                          Download MP3
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

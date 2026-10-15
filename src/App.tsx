@@ -43,7 +43,8 @@ import { ImageToVideoStudio } from './components/ImageToVideoStudio';
 export default function App() {
   const { currentUser, signInWithGoogle, signOut } = useAuth();
   const [activeStudio, setActiveStudio] = useState<StudioMode>('tts');
-  const [scriptText, setScriptText] = useState<string>(DEFAULT_ENGLISH_SCRIPT);
+  // Starts empty so page refresh starts clean with placeholders visible
+  const [scriptText, setScriptText] = useState<string>('');
   const [selectedVoice, setSelectedVoice] = useState<HumanVoice>(REALISTIC_HUMAN_VOICES[0]);
   const [selectedClone, setSelectedClone] = useState<VoiceClonePersona | null>(null);
   const [savedClones, setSavedClones] = useState<VoiceClonePersona[]>(DEFAULT_VOICE_CLONES);
@@ -186,28 +187,30 @@ export default function App() {
       )}
 
       {/* Modern Studio App Bar with Firebase Account */}
-      <header className="border-b border-white/[0.07] bg-[#0c0d12]/90 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+      <header className="border-b border-white/[0.07] bg-[#0c0d12]/95 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-[1440px] mx-auto px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3.5 flex items-center justify-between gap-3">
           {/* Logo & Brand: Anof Studio */}
-          <div className="flex items-center gap-3.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 flex items-center justify-center text-slate-950 font-black text-base shadow-lg shadow-amber-500/15 ring-1 ring-white/20">
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 flex items-center justify-center text-slate-950 font-black text-sm sm:text-base shadow-lg shadow-amber-500/15 ring-1 ring-white/20 shrink-0">
               A
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-base sm:text-lg text-white tracking-tight">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="font-bold text-sm sm:text-lg text-white tracking-tight truncate">
                   Anof Studio
                 </span>
-                <span className="text-[11px] font-mono text-slate-500">·</span>
-                <span className="text-xs text-slate-400 font-medium">Multimodal AI Suite</span>
+                <span className="hidden xs:inline text-[11px] font-mono text-slate-500">·</span>
+                <span className="hidden sm:inline text-xs text-slate-400 font-medium truncate">
+                  Multimodal AI Suite
+                </span>
                 {currentUser && (
-                  <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1 ml-1">
+                  <span className="text-[10px] text-amber-400 font-medium flex items-center gap-1 shrink-0 ml-1">
                     <Cloud className="w-3 h-3 text-amber-400" />
-                    Firestore Active
+                    <span className="hidden md:inline">Firestore Active</span>
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+              <p className="hidden md:flex text-[11px] text-slate-500 items-center gap-1.5">
                 <span>Human Speech</span>
                 <span>·</span>
                 <span>Voice Clone</span>
@@ -219,9 +222,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Active Voice Persona Status & Firebase Authentication Actions */}
-          <div className="flex items-center gap-2.5">
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs">
+          {/* Active Voice Persona Status & Actions - Compact on mobile */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs">
               <span className="text-slate-400">Speaker:</span>
               {selectedClone ? (
                 <span className="text-amber-400 font-medium flex items-center gap-1">
@@ -238,27 +241,28 @@ export default function App() {
             {/* Cloud Save & Saved Scripts */}
             <button
               onClick={handleSaveScriptToCloud}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
               title="Save current script to Firebase Firestore"
             >
               <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Save to Cloud</span>
+              <span className="hidden sm:inline">Save</span>
             </button>
 
             {currentUser && cloudScripts.length > 0 && (
               <button
                 onClick={() => setShowSavedScriptsModal(true)}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
                 title="View Saved Cloud Scripts"
               >
-                <FolderOpen className="w-3.5 h-3.5" />
-                <span>Saved ({cloudScripts.length})</span>
+                <FolderOpen className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden sm:inline">Saved</span>
+                <span>({cloudScripts.length})</span>
               </button>
             )}
 
             <button
               onClick={handleExportFullScript}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition flex items-center gap-1.5 cursor-pointer"
               title="Export Current Script"
             >
               <Download className="w-3.5 h-3.5" />
@@ -267,7 +271,7 @@ export default function App() {
 
             {/* Google Authentication Control */}
             {currentUser ? (
-              <div className="flex items-center gap-2 pl-1 border-l border-white/[0.08]">
+              <div className="flex items-center gap-1.5 pl-1 border-l border-white/[0.08]">
                 {currentUser.photoURL ? (
                   <img
                     src={currentUser.photoURL}
@@ -293,7 +297,7 @@ export default function App() {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 shadow-sm transition cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" />
-                <span>Sign In</span>
+                <span className="hidden xs:inline">Sign In</span>
               </button>
             )}
 
@@ -307,9 +311,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* Clean Studio Workflow Segmented Bar */}
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 border-t border-white/[0.05] overflow-x-auto py-1.5">
-          <div className="flex items-center gap-1 min-w-max">
+        {/* Clean Studio Workflow Segmented Bar - Horizontal Scroll on Touch */}
+        <div className="max-w-[1440px] mx-auto px-2 sm:px-6 lg:px-8 border-t border-white/[0.05] overflow-x-auto no-scrollbar py-1.5 scroll-smooth">
+          <div className="flex items-center gap-1 min-w-max px-1">
             {[
               { id: 'tts', label: 'Speech Synthesis', icon: Volume2, count: 'Realistic Human' },
               { id: 'translator', label: 'Universal Translator', icon: Languages, count: 'EN ⇄ FR & Any' },
@@ -324,7 +328,7 @@ export default function App() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveStudio(tab.id as StudioMode)}
-                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
                     isActive
                       ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
                       : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
@@ -360,6 +364,12 @@ export default function App() {
             onOpenVoiceCloneModal={() => setActiveStudio('voice-clone')}
             onSendToVideoStudio={handleSendToVideo}
             onOpenLanguageConverter={() => setActiveStudio('translator')}
+            onSpeechGenerated={(record) => {
+              if (currentUser) {
+                logSpeechGenerationToFirestore(currentUser.uid, record).catch(console.error);
+                showToast(`Audio track saved to Firestore (${record.language}).`);
+              }
+            }}
           />
         )}
 
